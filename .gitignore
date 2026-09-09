@@ -1,0 +1,30 @@
+# ===== Maven / Java 构建产物 =====
+target/
+*.class
+*.jar
+*.war
+*.ear
+*.log
+hs_err_pid*
+.recommenders/
+
+# ===== IDE =====
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+.factorypath
+out/
+*.ipr
+*.iws
+
+# ===== 操作系统 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 个人/临时 =====
+*.tmp
+*~

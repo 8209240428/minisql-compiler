@@ -20,16 +20,19 @@ SQL 文本 → Lexer(A) → Token 流 → Parser(B) → AST → Semantic(C) → 
 
 ## 环境与运行
 
-- JDK 17+
+- JDK 17+（JDK 8 跑不起来；类文件按 Java 17 编译）
 - Maven 3.x
 
 ```bash
 cd minisql-compiler
-mvn test                          # 全量单测（Lexer + Parser）
-mvn exec:java                     # B 的演示：SQL → Token → AST，含语法错误示例
+mvn test                          # 全量单测（含 lexer/parser/semantic/plan/optimizer/ui）
+mvn compile && java -cp target/classes minisql.parser.ParserDemo   # B：SQL→Token→AST
+mvn compile && java -cp target/classes minisql.Demo                # C：全流程/优化/错误
+mvn compile && java -cp target/classes minisql.ui.SwingApp         # 交互界面（Swing 窗口）
 ```
 
-IDE 里也可直接运行 `minisql.parser.ParserDemo`。
+IDE 里直接 Run 对应类即可（`minisql.parser.ParserDemo` / `minisql.Demo` / `minisql.ui.SwingApp`）。
+Windows 命令行跑 A/B 演示若中文乱码，先 `chcp 65001` 或用 `-Dfile.encoding=UTF-8`（Swing 窗口不受影响）。
 
 ---
 
@@ -222,12 +225,34 @@ mvn compile && java -cp target/classes minisql.Demo   # C 演示：合法SQL全�
 - C 的表达式 IR（`expr` 包）相对 B 的 AST 独立：因为 B 的 AST 没有“布尔常量 TRUE/FALSE”节点，常量折叠等优化无法直接表达，C 在 IR 侧补上 `Expr.Bool`，因此不必改动 B 的 `ast` 定义。
 - 约定保持：合并前 `mvn test` 必须全绿。
 
+## 交互界面（minisql.ui · Swing）
+
+一个供答辩 / 日常试用的轻量图形界面，把「SQL → Token → AST → 语义 → 计划 → 优化」整条流水线可视化。属**初步版**：功能简单、分层清晰，方便后续迭代换皮。
+
+运行：`mvn compile && java -cp target/classes minisql.ui.SwingApp`（或 IDE Run `minisql.ui.SwingApp`）。
+
+- 输入区写 SQL（多条用 `;` 分隔、末句分号可省），Ctrl+Enter 或点「运行」。
+- 结果分 4 个 Tab：**Token 流 / AST / 执行计划与优化（含逐步改写）/ 运行摘要**。
+- 顶部按钮：重置会话（清空 Catalog，等价新开会话）、清空输入、三个「示例」按钮（合法流程 / 优化对比 / 常见错误，点击会先重置会话再运行，保证演示自洽）。
+- 容错：词法错误整段报出；某一条语法错误只跳过该句，**后续语句仍继续编译**，且能看到之前 CREATE 登记的表。
+
+**如何接手迭代（分层约定）**
+- `Workbench`：会话模型，不依赖 Swing。`run(sql)` 把文本编译成结构化 `Report`（Token + 逐条 Entry）。所有编译与容错逻辑都在这层，改它 → 界面立即生效；并有独立单测。
+- `ReportText`：把 `Report` 渲染成纯文本。想换展示文字或做成网页/命令行输出，只改这层。
+- `MiniSqlWindow` / `SwingApp`：只做「SQL 放进 Workbench → 把文本塞进 Tab」。改布局 / 配色 / 图标 / 快捷键只动这里；要重写整个窗口也只需复用 `Workbench` + `ReportText`。
+- 不要碰 `lexer / parser / semantic / plan / optimizer` 主流水线——那是编译器本体（A/B/C 的成果）。
+
+## 代码仓库与覆盖率
+
+- 分支：`main`（稳定）+ 按分工各建一条 `dev-a-lexer` / `dev-b-parser` / `dev-c-plan`（已指向基线）；新功能（如交互界面）在 `dev-ui` 上开发、验证后合回 `main`。合并前 `mvn test` 必须全绿。
+- 覆盖率：默认不开统计以保持离线可构建；需要时联网执行 `mvn -Pcoverage verify`，报告在 `target/site/jacoco/index.html`；或用 IntelliJ 自带 Coverage 运行器直接看。
+
 ## 目录
 
 ```
 minisql-compiler/
 ├── grammar.md                          # 文法 + C 阶段说明（验收要交）
-├── README.md                           # 协作分工 + C 模块说明
+├── README.md                           # 协作分工 + C 模块 + 交互界面说明
 ├── docs/                               # C：demo.sql（演示脚本）、答辩Q&A.md
 ├── .gitignore                          # 忽略 target/、.idea/ 等
 ├── pom.xml
@@ -243,7 +268,8 @@ minisql-compiler/
 │   ├── expr/                           # C：自有的“已绑定/类型化”表达式 IR
 │   ├── semantic/                       # C：名字绑定、类型检查、语义错误
 │   ├── plan/                           # C：逻辑计划节点 + PlanBuilder + 计划打印
-│   └── optimizer/                      # C：5 条优化规则 + Optimizer
+│   ├── optimizer/                      # C：5 条优化规则 + Optimizer
+│   └── ui/                             # 交互界面：Workbench + ReportText + MiniSqlWindow + SwingApp
 └── src/test/java/minisql/
     ├── lexer/LexerTest.java            # A
     ├── parser/ParserTest.java          # B
@@ -251,6 +277,8 @@ minisql-compiler/
     ├── semantic/SemanticAnalyzerTest.java  # C
     ├── plan/PlanBuilderTest.java       # C
     ├── optimizer/OptimizerTest.java    # C
+    ├── ui/WorkbenchTest.java           # 交互会话模型（无头可跑）
+    ├── ui/MiniSqlWindowTest.java       # Swing 窗口构造冒烟（无图形环境自动跳过）
     └── MiniSqlCompilerTest.java        # C（端到端）
 ```
 

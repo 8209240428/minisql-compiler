@@ -1,294 +1,184 @@
- # MiniSQL Compiler
+# MiniSQL Compiler（Java）
 
-3 人协作的 MiniSQL 编译器（Java）。流水线：
+3 人协作的 MiniSQL 编译器（Java），从零实现 **词法 → 语法 → 语义 → 逻辑执行计划 → 优化** 的完整流水线，
+另附一个可运行的 Swing 交互界面。产品产出**逻辑执行计划**并可视化用于答辩/演示，不做真实行存储与执行。
 
 ```
 SQL 文本 → Lexer(A) → Token 流 → Parser(B) → AST → Semantic(C) → 检查后 IR → Plan(C) → 优化后逻辑计划
 ```
 
-当前 **A 词法**、**B 语法+AST**、**C 语义分析 + 执行计划** 均已接入本仓库（C 模块说明见文末「C 部分：语义分析 + 执行计划」）。
-
-## 分工
-
-| 角色 | 模块 | 代码位置 |
+| 阶段 | 角色 | 说明 |
 | --- | --- | --- |
-| A | 词法分析 Lexer | `src/main/java/minisql/lexer/` |
-| B | 语法分析 Parser + AST | `src/main/java/minisql/parser/`、`src/main/java/minisql/ast/` |
-| C | 语义分析 + Catalog + 逻辑执行计划 + 5 条优化规则 | `minisql/catalog`、`minisql/expr`、`minisql/semantic`、`minisql/plan`、`minisql/optimizer`；门面 `minisql.MiniSqlCompiler`、演示 `minisql.Demo` |
+| A | 词法分析 Lexer | 支持四类语句所需全部 Token，行列号定位，`INT=CONST`/`STRING` 区分，`!=` 与 `<>` 均 `NEQ` |
+| B | 语法分析 Parser + AST | 递归下降 / LL(1)，表达式优先级由文法层级保证；AST 全节点带行列号 |
+| C | 语义 + Catalog + Plan + 5 条优化规则 | 名字绑定与类型检查 → 逻辑计划 → 常量折叠/布尔化简/冗余谓词消除/谓词下推/投影裁剪 |
 
-文法见 [`grammar.md`](grammar.md)。
+文法与各模块接口细节见 [`grammar.md`](grammar.md)；演示脚本见 [`docs/demo.sql`](docs/demo.sql)；
+答辩高频问答见 [`docs/答辩Q&A.md`](docs/答辩Q&A.md)。
 
-## 环境与运行
+---
 
-- JDK 17+（JDK 8 跑不起来；类文件按 Java 17 编译）
+## 快速开始
+
+- **JDK 17+**（JDK 8 跑不起来；类文件按 Java 17 编译）
 - 构建用 **Maven Wrapper**：仓库自带 `mvnw`（Mac/Linux/Git Bash）与 `mvnw.cmd`（Windows cmd），
-  首次运行会自动下载 Maven 3.9.9 到 `~/.m2/wrapper`，**机器上无需预装 Maven**。
+  首次运行会自动下载 Maven 3.9.9 到 `~/.m2/wrapper`，机器上**无需预装 Maven**。
 
-> **打开交互界面最简单的方式**：Windows 下直接**双击 `start-gui.bat`** —— 自动找 JDK 17+、
-> 用 Wrapper 编译、再弹出 Swing 窗口，全程无需命令行。
+### 打开交互界面（Swing）
+
+> **最简单方式：Windows 下直接双击根目录的 `start-gui.bat`**
+> —— 自动定位 JDK 17+ → 用 Wrapper 编译 → 弹出窗口，全程无需命令行。
+> 已装 Maven 或想手动跑：`./mvnw compile && java -cp target/classes minisql.ui.SwingApp`。
 
 ```bash
 cd minisql-compiler
-./mvnw test                       # 全量单测（含 lexer/parser/semantic/plan/optimizer/ui）
+./mvnw test                       # 全量单测（lexer/parser/catalog/semantic/plan/optimizer/ui，70 项）
 ./mvnw compile && java -cp target/classes minisql.parser.ParserDemo   # B：SQL→Token→AST
-./mvnw compile && java -cp target/classes minisql.Demo                # C：全流程/优化/错误
-./mvnw compile && java -cp target/classes minisql.ui.SwingApp         # 交互界面（Swing 窗口）
+./mvnw compile && java -cp target/classes minisql.Demo                # C：全流程 / 优化对比 / 错误
+./mvnw compile && java -cp target/classes minisql.ui.SwingApp         # 交互界面（Swing）
+./mvnw -Pcoverage verify          # 覆盖率报告（需联网）→ target/site/jacoco/index.html
 ```
 
-Windows cmd 里把 `./mvnw` 换成 `mvnw.cmd`；装了 Maven 的话也可直接用 `mvn`。
-IDE 里直接 Run 对应类即可（`minisql.parser.ParserDemo` / `minisql.Demo` / `minisql.ui.SwingApp`）。
-Windows 命令行跑 A/B 演示若中文乱码，先 `chcp 65001` 或用 `-Dfile.encoding=UTF-8`（Swing 窗口不受影响）。
+- Windows cmd 把 `./mvnw` 换成 `.\mvnw.cmd`；装了 Maven 也可直接用 `mvn`。
+- IDE 里直接 Run 对应类即可：`minisql.parser.ParserDemo` / `minisql.Demo` / `minisql.ui.SwingApp`。
+- 在 Windows 命令行跑 A/B 演示若中文乱码：先 `chcp 65001`，或加 `-Dfile.encoding=UTF-8`（Swing 窗口不受影响）。
 
 ---
 
-## 给 C：怎么接到 AST
+## 支持的语句与文法
 
-入口类：`minisql.MiniSqlFrontend`
-
-```java
-import minisql.MiniSqlFrontend;
-import minisql.ast.*;
-
-Statement ast = MiniSqlFrontend.parse(sql);           // 一条语句，结束后必须是 EOF
-List<Statement> all = MiniSqlFrontend.parseAll(sql);  // 多条语句
-List<Token> tokens = MiniSqlFrontend.tokenize(sql);   // 只要 Token 时用
-```
-
-不要自己 new Parser 去猜 Token 列表，统一走上面三个方法。
-
-### 用访问者遍历（语义 / Plan 都走这里）
-
-```java
-public class SemanticAnalyzer implements AstVisitor<Void> {
-    @Override
-    public Void visitSelectStmt(SelectStmt stmt) {
-        // stmt.tableName() / stmt.star() / stmt.columns() / stmt.where()
-        if (stmt.where() != null) {
-            stmt.where().accept(this);
-        }
-        return null;
-    }
-    // 其余 visitXxx 同样实现
-}
-
-ast.accept(new SemanticAnalyzer());
-```
-
-> 说明：仓库中 C 已实现的 `SemanticAnalyzer(Catalog)` 需传入 Catalog（平时直接用门面 `minisql.MiniSqlCompiler` 即可），上例仅为「访问者写法」示意。
-
-`AstVisitor` 需要实现的方法：
-
-- 语句：`visitCreateTableStmt` / `visitInsertStmt` / `visitSelectStmt` / `visitDeleteStmt`
-- 表达式：`visitBinaryExpr` / `visitUnaryExpr` / `visitIdentifierExpr` / `visitLiteralExpr`
-
-### AST 字段约定
-
-**CreateTableStmt**
-
-- `tableName()`：表名
-- `columns()`：`List<ColumnDef>`，每个有 `name()`、`type()`（`DataType.INT` / `DataType.VARCHAR`）
-
-**InsertStmt**
-
-- `tableName()`、`columns()`（列名列表）、`values()`（`List<Expression>`，目前是字面量）
-
-**SelectStmt**
-
-- `star() == true` 表示 `SELECT *`，此时 `columns()` 为空
-- 否则 `columns()` 是选出的列名
-- `tableName()`
-- `where()`：无 WHERE 时为 **`null`**
-
-**DeleteStmt**
-
-- `tableName()`
-- `where()`：无 WHERE 时为 **`null`**
-
-**表达式**
-
-- `BinaryExpr`：`left()` / `op()` / `right()`，`BinaryOp` 含 `AND OR EQ NEQ GT LT GTE LTE PLUS MINUS MUL DIV`
-- `UnaryExpr`：`op()` 为 `NOT` 或 `NEGATE`，`operand()`
-- `IdentifierExpr`：`name()` 列名
-- `LiteralExpr`：`raw()` 文本；`kind()` 为 `NUMBER` 或 `STRING`（**不要把数字和字符串都当成 CONST**）
-
-所有节点都有 `line()`、`col()`，语义报错请带上位置。
-
-### 异常怎么分
-
-| 阶段 | 异常 | 谁抛 |
-| --- | --- | --- |
-| 词法 | `minisql.lexer.LexicalException` | A |
-| 语法 | `minisql.parser.SyntaxException` | B |
-| 语义 | `minisql.semantic.SemanticException`（`[语义错误] line..col`） | C |
-
-语法错误示例：
-
-```
-[语法错误] line:1, col:44 unexpected token: SEMICOLON(;)
-expected: IDENTIFIER | CONST | STRING | LPAREN | NOT
-```
-
-### 表达式优先级（答辩 / 优化都要用）
-
-从低到高：`OR` < `AND` < `NOT` < 比较 < `+` `-` < `*` `/`
+- 语句：`CREATE TABLE` / `INSERT INTO … VALUES` / `SELECT … FROM … [WHERE]` / `DELETE FROM … [WHERE]`
+- 类型：仅 `INT`、`VARCHAR`（字符串用单引号，如 `'Alice'`）
+- 表达式优先级（由文法层级保证，从低到高）：
+  `OR` < `AND` < `NOT` < 比较 `< > <= >= = <>` < `+` `-` < `*` `/` < 一元负号 / 括号
 
 ```
 a = 1 OR b = 2 AND c = 3     →  a = 1 OR (b = 2 AND c = 3)
-age > 10 + 8                 →  age > (10 + 8)
+age > 10 + 8                 →  age > (10 + 8)     （便于常量折叠）
 ```
 
-C 做常量折叠时，直接看 `BinaryExpr` 的 `PLUS` 节点即可。
+---
+
+## 语义与类型规则
+
+- 列与常量只有 `INT` / `VARCHAR`；布尔由比较、`AND`/`OR`/`NOT` 产生。
+- 字符串列只允许 `=` / `<>`；序比较（`< > <= >=`）与算术只允许 `INT`。
+- `SELECT`/`DELETE` 的 WHERE 整体必须是布尔；INSERT 值必须是常量、类型与列一致、不允许引用列。
+- INSERT 必须覆盖目标表**全部列**，值按列下标对齐。
+- 错误统一带行列号，格式对齐三段：
+
+| 阶段 | 异常 | 示例 |
+| --- | --- | --- |
+| 词法 | `[词法错误] line:L, col:C …` | 字符串未闭合、非法字符 `@` |
+| 语法 | `[语法错误] line:L, col:C unexpected token: …` | 缺分号、`SELEC` 拼错 |
+| 语义 | `[语义错误] line:L, col:C …` | 未定义的表/列、类型不匹配、WHERE 非布尔 |
+
+## 5 条优化规则（`minisql.optimizer`）
+
+| # | 规则 | 作用 | 例 |
+| --- | --- | --- | --- |
+| R1 | 常量折叠 | 纯常量子表达式编译期求值 | `1=1→TRUE`、`age>10+8→age>18` |
+| R2 | 布尔化简 | TRUE/FALSE 恒等吸收、双 NOT、`x AND NOT x` | `TRUE AND x→x`；恒真→删 Filter |
+| R3 | 冗余谓词消除 | AND/OR 去重复谓词 | `p AND p→p` |
+| R4 | 谓词下推 | Filter 并入 Scan 内部过滤 | 消除独立 Filter 算子 |
+| R5 | 投影裁剪 | Scan 只读 `Project输出 ∪ 过滤引用列` | 见下 |
+
+```
+-- 优化前                               -- 优化后（R1→R2→R4）
+Project [id]                           Project [id]
+  Filter ((1 = 1) AND (age > (10 + 8)))  Scan student cols=[id, age] filter: (age > 18)
+    Scan student cols=[id, name, age]
+```
+
+`minisql.Demo` 会把每次规则改写的中间计划逐步打印出来。
 
 ---
 
-## 给 A：Lexer 相对最初版本的改动
+## 模块接口约定（给继续开发 / 接手的人）
 
-B 解析四类 SQL 必须用到这些 Token，已写进 `TokenType` / `Lexer`：
-
-1. 关键字：`CREATE` `TABLE` `INSERT` `INTO` `VALUES` `DELETE` `INT` `VARCHAR`
-2. 字符串改为 **`STRING`**，整数仍是 **`CONST`**（方便 C 做类型检查）
-3. `!=` 与 `<>` 都是 `NEQ`
-4. 算术：`PLUS` `MINUS` `SLASH`（`*` 仍是原来的 `STAR`）
-
-A 原有 SELECT 单测仍然通过。pull 之后请再跑 `mvn test`。若还要补注释 `--` / `/* */`，可以继续加，不要删现有 Token 种类。
-
----
-
-## C 部分：语义分析 + 执行计划
-
-C 从 B 的 AST 出发，走 `语义分析 → 逻辑计划 → 优化`。语义分析用访问者遍历 AST，产出**已绑定 + 类型检查**的中间 IR，再交给计划生成，因此 C 不修改 A/B 的任何节点定义。
-
-### C 统一入口（复用 B 的 MiniSqlFrontend）
+**统一入口**（不要自己 new `Parser`）：
 
 ```java
-MiniSqlCompiler c = new MiniSqlCompiler();              // 每次会话一个实例（持有 Catalog）
-List<CompileResult> rs = c.compileAll(
-    "CREATE TABLE student(id INT, name VARCHAR, age INT);" +
-    "INSERT INTO student(id, name, age) VALUES (1, 'Alice', 20);" +
-    "SELECT id, name FROM student WHERE age > 18;");
+Statement ast = MiniSqlFrontend.parse(sql);           // 一条语句，结束后必须 EOF
+List<Statement> all = MiniSqlFrontend.parseAll(sql);  // 多条语句
+List<Token> tokens = MiniSqlFrontend.tokenize(sql);   // 只要 Token
 ```
 
-每个 `CompileResult` 提供：`ok()/error()`（语义错误已封装不抛出）、
-`before()/after()`（优化前后计划）、`steps()/stepNames()`（逐步优化快照，答辩用）、
-`analyzed()`。`CREATE TABLE` 会登记进 `c.catalog()`，同一实例内后续语句可见（会话状态）。
+**语义 / 计划都走访问者**：`AstNode.accept(AstVisitor)`，实现
+`visitCreateTableStmt/visitInsertStmt/visitSelectStmt/visitDeleteStmt` 与
+`visitBinaryExpr/visitUnaryExpr/visitIdentifierExpr/visitLiteralExpr`。
 
-### C 各包职责
+**AST 关键字段**（都是只读 getter，别改含义）：
 
-| 包 | 主要类 | 职责 |
-| --- | --- | --- |
-| `minisql.catalog` | `Catalog` / `TableMeta` / `ColumnMeta` | 会话符号表：建表登记、查表/查列（大小写不敏感） |
-| `minisql.expr` | `Expr`(sealed) 等 | C 自有的“已绑定/类型化”表达式 IR（含布尔常量 TRUE/FALSE） |
-| `minisql.semantic` | `SemanticAnalyzer` / `Analyzed*` / `SemanticException` | 名字绑定 + 类型检查，产出中间结果 |
-| `minisql.plan` | `PlanNode`(Scan/Filter/Project/Insert/Delete) / `PlanBuilder` / `LogicalPlan` | 中间结果 → 未优化逻辑计划 + 树形打印 |
-| `minisql.optimizer` | 5 条 `OptimizationRule` + `Optimizer` | 规则改写 + 逐步快照 |
-| `minisql`（根） | `MiniSqlCompiler` / `CompileResult` / `Demo` | 门面与演示 |
+- `CreateTableStmt.tableName()` / `.columns()` → `List<ColumnDef>`（`name()`、`type()`=INT|VARCHAR）
+- `InsertStmt.tableName()` / `.columns()` / `.values()`
+- `SelectStmt.star()`（true 时 `.columns()` 为空）/ `.tableName()` / `.where()`（无 WHERE 为 **null**）
+- `DeleteStmt.tableName()` / `.where()`（无 WHERE 为 **null**）
+- 表达式：`BinaryExpr(left, op, right)`、`UnaryExpr(op=NOT|NEGATE, operand)`、
+  `IdentifierExpr(name)`、`LiteralExpr(raw, kind=NUMBER|STRING)`——**数字与字符串用 kind 区分，不都叫 CONST**
+- 所有 AST 节点都有 `line()` / `col()`，报错用它定位。
 
-### 语义 / 类型规则（摘要）
+**Lexer Token 契约**（`TokenType`）：关键字 `CREATE TABLE INSERT INTO VALUES DELETE INT VARCHAR`
+`SELECT FROM WHERE AND OR NOT`；数字→`CONST`、字符串→`STRING`；比较 `=` `<>`/`!=` `>` `>=` `<` `<=`；
+算术 `+` `-` `*`(STAR) `/`(SLASH)；分隔 `, ( ) ;`；末尾必有 `EOF`。当前不支持 `--`/`/* */` 注释（可自行扩展，别删现有 Token 种类）。
 
-- 类型仅 `INT`、`VARCHAR`；字符串列只允许 `= / <>`，序比较（`< > <= >=`）只允许 INT。
-- 算术 `+ - * /`、一元负号只作用于 INT；`AND / OR / NOT` 与比较的结果才是布尔；SELECT/DELETE 的 WHERE 必须是布尔。
-- INSERT 必须覆盖目标表全部列、值与列按下标对齐且类型匹配、值不允许引用列。
-- 语义错误格式与词法/语法一致：`[语义错误] line:1, col:1 未定义的表 'nosuch_table'`。
+---
 
-### 5 条优化规则（在 Scan/Filter/Project 计划树上按序重写）
+## 交互界面（`minisql/ui` · Swing）
 
-| # | 规则 | 作用 |
-| --- | --- | --- |
-| R1 | 常量折叠 | `1=1 → TRUE`、`age>10+8 → age>18` |
-| R2 | 布尔化简 | `TRUE AND x → x`、`FALSE AND x → FALSE`、`x AND NOT x → FALSE`、`NOT NOT x → x`；条件恒真则去掉 Filter |
-| R3 | 冗余谓词消除 | 去掉重复的相同谓词（AND/OR 列表） |
-| R4 | 谓词下推 | 把 Filter 并入 Scan 的内部过滤，消除独立 Filter 算子 |
-| R5 | 投影裁剪 | Scan 只读 `Project 输出列 ∪ 过滤引用列` |
-
-优化示例（`minisql.Demo` 会逐条打印每步优化）：
-
-```
--- 优化前
-Project [id, name]
-  Filter ((1 = 1) AND (age > (10 + 8)))
-    Scan student cols=[id, name, age]
-
--- 优化后（R1 → R2 → R4）
-Project [id, name]
-  Scan student cols=[id, name, age] filter: (age > 18)
-```
-
-### 运行 C 的演示与测试
-
-```bash
-mvn test                                          # 全量单测（含 C：catalog/semantic/plan/optimizer/端到端）
-mvn compile && java -cp target/classes minisql.Demo   # C 演示：合法SQL全流程 / 优化对比 / 语义错误
-```
-
-> 说明：无参的 `mvn exec:java` 默认运行的是 **B 的 `ParserDemo`**（pom 里配置的 mainClass，`-Dexec.mainClass` 会被它覆盖）。运行 C 演示请用 IDE 直接 Run `minisql.Demo`，或先 `mvn compile` 再执行上面的 `java -cp …`。
-
-演示输入样例见 [`docs/demo.sql`](docs/demo.sql)；答辩 Q&A 见 [`docs/答辩Q&A.md`](docs/答辩Q&A.md)。
-
-### 关键设计说明
-
-- 本编译器产出**逻辑执行计划**并打印，用于演示/答辩；不实现行存储与真实执行。
-- C 的表达式 IR（`expr` 包）相对 B 的 AST 独立：因为 B 的 AST 没有“布尔常量 TRUE/FALSE”节点，常量折叠等优化无法直接表达，C 在 IR 侧补上 `Expr.Bool`，因此不必改动 B 的 `ast` 定义。
-- 约定保持：合并前 `mvn test` 必须全绿。
-
-## 交互界面（minisql.ui · Swing）
-
-一个供答辩 / 日常试用的轻量图形界面，把「SQL → Token → AST → 语义 → 计划 → 优化」整条流水线可视化。属**初步版**：功能简单、分层清晰，方便后续迭代换皮。
-
-运行：`mvn compile && java -cp target/classes minisql.ui.SwingApp`（或 IDE Run `minisql.ui.SwingApp`）。
+把整条流水线可视化，供答辩 / 日常试用。属**初步版**：编译逻辑与界面分层，方便后续换皮。
 
 - 输入区写 SQL（多条用 `;` 分隔、末句分号可省），Ctrl+Enter 或点「运行」。
-- 结果分 4 个 Tab：**Token 流 / AST / 执行计划与优化（含逐步改写）/ 运行摘要**。
-- 顶部按钮：重置会话（清空 Catalog，等价新开会话）、清空输入、三个「示例」按钮（合法流程 / 优化对比 / 常见错误，点击会先重置会话再运行，保证演示自洽）。
-- 容错：词法错误整段报出；某一条语法错误只跳过该句，**后续语句仍继续编译**，且能看到之前 CREATE 登记的表。
+- 结果分 4 个 Tab：**Token 流 / AST / 执行计划与优化（逐步改写）/ 运行摘要**。
+- 顶部按钮：重置会话（清空 Catalog）、清空输入、示例·全流程 / 优化对比 / 常见错误（点击先重置再运行，演示自洽）。
+- 容错：词法错误整段报出；某一句语法错误只跳过该句，后续语句继续编译且能看到之前 CREATE 的表。
 
-**如何接手迭代（分层约定）**
-- `Workbench`：会话模型，不依赖 Swing。`run(sql)` 把文本编译成结构化 `Report`（Token + 逐条 Entry）。所有编译与容错逻辑都在这层，改它 → 界面立即生效；并有独立单测。
-- `ReportText`：把 `Report` 渲染成纯文本。想换展示文字或做成网页/命令行输出，只改这层。
-- `MiniSqlWindow` / `SwingApp`：只做「SQL 放进 Workbench → 把文本塞进 Tab」。改布局 / 配色 / 图标 / 快捷键只动这里；要重写整个窗口也只需复用 `Workbench` + `ReportText`。
-- 不要碰 `lexer / parser / semantic / plan / optimizer` 主流水线——那是编译器本体（A/B/C 的成果）。
+**后续迭代的分层约定**
+
+| 层 | 类 | 职责 | 接手者改这里 |
+| --- | --- | --- | --- |
+| 会话模型 | `Workbench` | 非 GUI；`run(sql)`→结构化 `Report`；容错与会话状态 | 编译逻辑、加新能力 |
+| 文本渲染 | `ReportText` | `Report`→纯文本 | 换展示文案 / 网页输出 |
+| 窗口 | `MiniSqlWindow`/`SwingApp` | SQL 放进去、文本塞进 Tab | 布局 / 配色 / 图标 / 快捷键，或整窗重写 |
+
+不要碰 `lexer / parser / semantic / plan / optimizer` —— 那是编译器本体（A/B/C 的成果）。
+
+---
 
 ## 代码仓库与覆盖率
 
-- 分支：`main`（稳定）+ 按分工各建一条 `dev-a-lexer` / `dev-b-parser` / `dev-c-plan`（已指向基线）；新功能（如交互界面）在 `dev-ui` 上开发、验证后合回 `main`。合并前 `mvn test` 必须全绿。
-- 覆盖率：默认不开统计以保持离线可构建；需要时联网执行 `mvn -Pcoverage verify`，报告在 `target/site/jacoco/index.html`；或用 IntelliJ 自带 Coverage 运行器直接看。
+- 分支：`main`（稳定）；按分工建 `dev-a-lexer` / `dev-b-parser` / `dev-c-plan`（基线）；交互界面在 `dev-ui`
+  上开发并合回 `main`。合并前必须 `./mvnw test` 全绿。
+- 覆盖率：默认不开以保持离线可构建；需要时联网 `./mvnw -Pcoverage verify`，或 IntelliJ 自带 Coverage 运行器。
+
+---
 
 ## 目录
 
 ```
 minisql-compiler/
-├── grammar.md                          # 文法 + C 阶段说明（验收要交）
-├── README.md                           # 协作分工 + C 模块 + 交互界面说明
-├── docs/                               # C：demo.sql（演示脚本）、答辩Q&A.md
-├── .gitignore                          # 忽略 target/、.idea/ 等
-├── pom.xml
-├── src/main/java/minisql/
-│   ├── MiniSqlFrontend.java            # B→C 的统一入口（SQL→AST）
-│   ├── MiniSqlCompiler.java            # C：门面（带状态 Catalog，SQL→语义→计划→优化）
-│   ├── CompileResult.java              # C：单条语句的编译结果
-│   ├── Demo.java                       # C：端到端演示主程序
-│   ├── lexer/                          # A：词法分析
-│   ├── ast/                            # B：AST 节点 + AstVisitor
-│   ├── parser/                         # B：Parser、语法错误、AST 打印
-│   ├── catalog/                        # C：Catalog 会话符号表 + 类型元信息
-│   ├── expr/                           # C：自有的“已绑定/类型化”表达式 IR
-│   ├── semantic/                       # C：名字绑定、类型检查、语义错误
-│   ├── plan/                           # C：逻辑计划节点 + PlanBuilder + 计划打印
-│   ├── optimizer/                      # C：5 条优化规则 + Optimizer
-│   └── ui/                             # 交互界面：Workbench + ReportText + MiniSqlWindow + SwingApp
-└── src/test/java/minisql/
-    ├── lexer/LexerTest.java            # A
-    ├── parser/ParserTest.java          # B
-    ├── catalog/CatalogTest.java        # C
-    ├── semantic/SemanticAnalyzerTest.java  # C
-    ├── plan/PlanBuilderTest.java       # C
-    ├── optimizer/OptimizerTest.java    # C
-    ├── ui/WorkbenchTest.java           # 交互会话模型（无头可跑）
-    ├── ui/MiniSqlWindowTest.java       # Swing 窗口构造冒烟（无图形环境自动跳过）
-    └── MiniSqlCompilerTest.java        # C（端到端）
+├── start-gui.bat                    # Windows 双击启动交互界面
+├── mvnw / mvnw.cmd                  # Maven Wrapper（无需预装 Maven）
+├── .mvn/wrapper/                    # wrapper 配置（distributionUrl=3.9.9）
+├── grammar.md                       # 文法 + 各模块接口说明（验收要交）
+├── README.md                        # 本文档
+├── docs/                            # demo.sql（演示脚本）、答辩Q&A.md
+├── .gitattributes / .gitignore
+├── pom.xml                          # JDK17；exec 默认 mainClass=ParserDemo；可选 coverage profile
+└── src/
+    ├── main/java/minisql/
+    │   ├── MiniSqlFrontend.java     # B→C 统一入口（SQL→AST）
+    │   ├── MiniSqlCompiler.java     # C 门面（带状态 Catalog）
+    │   ├── CompileResult.java       # C 单条语句编译结果
+    │   ├── Demo.java                # C 端到端演示
+    │   ├── lexer/ ast/ parser/      # A / B
+    │   ├── catalog/ expr/ semantic/ plan/ optimizer/   # C
+    │   └── ui/                      # Workbench + ReportText + MiniSqlWindow + SwingApp
+    └── test/java/minisql/           # 每个模块对应用例 + ui（70 项全绿）
 ```
 
-## 请不要做的事
+## 协作注意（不要做的事）
 
-- 不要改 `AstNode` / 各 Stmt 的字段含义（C 依赖这些 getter）
-- 不要在 Parser 里写 Catalog、类型检查、Plan（那是 C）
-- 合并前先 `mvn test`，不通过不要往主分支合
+- 不要改 `AstNode` / 各 Stmt 字段含义（语义与界面都依赖这些 getter）。
+- 不要在 Parser 里写 Catalog、类型检查、Plan（那是 C）。
+- 合并前先 `./mvnw test`，不通过不要往主分支合。

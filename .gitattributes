@@ -1,0 +1,6 @@
+# 换行符约定：.sh/.properties 固定 LF；.cmd/.bat 固定 CRLF（Windows 执行需要）
+mvnw text eol=lf
+.mvn/wrapper/maven-wrapper.properties text eol=lf
+*.sh text eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf

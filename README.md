@@ -24,6 +24,9 @@ SQL 文本 → Lexer(A) → Token 流 → Parser(B) → AST → Semantic(C) → 
 - 构建用 **Maven Wrapper**：仓库自带 `mvnw`（Mac/Linux/Git Bash）与 `mvnw.cmd`（Windows cmd），
   首次运行会自动下载 Maven 3.9.9 到 `~/.m2/wrapper`，**机器上无需预装 Maven**。
 
+> **打开交互界面最简单的方式**：Windows 下直接**双击 `start-gui.bat`** —— 自动找 JDK 17+、
+> 用 Wrapper 编译、再弹出 Swing 窗口，全程无需命令行。
+
 ```bash
 cd minisql-compiler
 ./mvnw test                       # 全量单测（含 lexer/parser/semantic/plan/optimizer/ui）

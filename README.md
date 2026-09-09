@@ -21,16 +21,18 @@ SQL 文本 → Lexer(A) → Token 流 → Parser(B) → AST → Semantic(C) → 
 ## 环境与运行
 
 - JDK 17+（JDK 8 跑不起来；类文件按 Java 17 编译）
-- Maven 3.x
+- 构建用 **Maven Wrapper**：仓库自带 `mvnw`（Mac/Linux/Git Bash）与 `mvnw.cmd`（Windows cmd），
+  首次运行会自动下载 Maven 3.9.9 到 `~/.m2/wrapper`，**机器上无需预装 Maven**。
 
 ```bash
 cd minisql-compiler
-mvn test                          # 全量单测（含 lexer/parser/semantic/plan/optimizer/ui）
-mvn compile && java -cp target/classes minisql.parser.ParserDemo   # B：SQL→Token→AST
-mvn compile && java -cp target/classes minisql.Demo                # C：全流程/优化/错误
-mvn compile && java -cp target/classes minisql.ui.SwingApp         # 交互界面（Swing 窗口）
+./mvnw test                       # 全量单测（含 lexer/parser/semantic/plan/optimizer/ui）
+./mvnw compile && java -cp target/classes minisql.parser.ParserDemo   # B：SQL→Token→AST
+./mvnw compile && java -cp target/classes minisql.Demo                # C：全流程/优化/错误
+./mvnw compile && java -cp target/classes minisql.ui.SwingApp         # 交互界面（Swing 窗口）
 ```
 
+Windows cmd 里把 `./mvnw` 换成 `mvnw.cmd`；装了 Maven 的话也可直接用 `mvn`。
 IDE 里直接 Run 对应类即可（`minisql.parser.ParserDemo` / `minisql.Demo` / `minisql.ui.SwingApp`）。
 Windows 命令行跑 A/B 演示若中文乱码，先 `chcp 65001` 或用 `-Dfile.encoding=UTF-8`（Swing 窗口不受影响）。
 

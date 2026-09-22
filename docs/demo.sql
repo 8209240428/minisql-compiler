@@ -1,10 +1,11 @@
 -- =====================================================================
 -- MiniSQL 演示 / 联调用 SQL 脚本（C 成员整理）
 -- 说明：
---   1) 本脚本是「输入样例 + 期望输出注释」，可直接用 minisql.Demo 的
---      三个演示段替换，或经 MiniSqlCompiler.compileAll(...) 逐条编译。
---   2) 当前编译器产出「逻辑执行计划」并打印（见每段注释），不做真实执行。
---   3) 每段建议在答辩现场顺序展示：合法 → 优化 → 错误。
+--   1) 演示一~三 是「输入样例 + 期望输出注释」，经 MiniSqlCompiler.compileAll(...)
+--      逐条编译，产出并打印「逻辑执行计划」（不做真实执行）。
+--   2) 演示四 交给真正的存储/执行引擎：用命令行 minisql.exec.Cli 跑，
+--      展示 INSERT→SELECT→DELETE 的实际结果集/影响行数，以及「重开同库后数据仍在」。
+--   3) 每段建议在答辩现场顺序展示：合法 → 优化 → 错误 → 落盘持久化。
 -- =====================================================================
 
 -- ---------------------------------------------------------------------
@@ -56,11 +57,34 @@ INSERT INTO student(id, name, age) VALUES (1, 20, 'x');   -- 值类型不匹配
 DELETE FROM student WHERE age;             -- DELETE 的 WHERE 非布尔
 CREATE TABLE student(id INT, x INT);       -- 表已存在
 
+-- ---------------------------------------------------------------------
+-- 演示四：真实执行 + 落盘持久化（minisql.exec.Cli）
+-- 运行方式：
+--   ./mvnw compile
+--   java -cp target/classes minisql.exec.Cli data.db    # 交互输入下列 SQL
+-- 讲解口径：
+--   INSERT 把行经 RowCodec 编码 → TableHeap → SlottedPage → BufferPool(LRU) → 落盘；
+--   SELECT 由 Executor 真实执行 Scan/Filter/Project 返回结果集；
+--   DELETE 先扫描取得 Rid 再打墓碑删除；exit 时回写缓存并关闭文件；
+--   再次打开同一 data.db，CatalogStore 从目录页重载表结构、堆页恢复行数据。
+-- ---------------------------------------------------------------------
+
+CREATE TABLE student(id INT, name VARCHAR, age INT);
+INSERT INTO student(id,name,age) VALUES (1,'Alice',20);
+INSERT INTO student(id,name,age) VALUES (2,'Bob',17);
+SELECT id,name FROM student WHERE age >= 18;   -- 结果集：id|name → 1|Alice  (1 行)
+DELETE FROM student WHERE id = 2;              -- 1 行受影响
+SELECT * FROM student;                          -- id|name|age → 1|Alice|20  (1 行)
+
+-- 关闭终端（exit）后重新打开同一 data.db，再执行：
+SELECT * FROM student;                          -- 1|Alice|20 仍在（已持久化）
+
 -- =====================================================================
 -- 运行建议：
 --   mvn test                                        # 全量单测全绿
---   mvn compile && java -cp target/classes minisql.Demo   # 三段式现场演示
--- 或 IDE 直接运行 minisql.Demo。
+--   mvn compile && java -cp target/classes minisql.Demo   # 演示一~三（计划/优化/错误）
+--   mvn compile && java -cp target/classes minisql.exec.Cli data.db   # 演示四（真实执行/持久化）
+-- 或 IDE 直接运行 minisql.Demo / minisql.exec.Cli。
 -- 注：无参 `mvn exec:java` 默认跑 B 的 ParserDemo（pom 默认 mainClass），
 --      `-Dexec.mainClass=minisql.Demo` 会被它覆盖，故 C 演示用上面方式。
 -- =====================================================================

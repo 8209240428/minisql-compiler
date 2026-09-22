@@ -1,22 +1,24 @@
 # MiniSQL 实训答辩 Q&A（C 部分为主，兼答全链路）
 
 > 面向对象：3 人团队通用。标 **[C]** 的由 C 主讲，标 **[A]/[B]/[共同]** 的按分工作答。
-> 配合 `minisql.Demo` 的演示一/二/三段与 `docs/demo.sql` 一起看。
+> 配合 `minisql.Demo` 的演示一/二/三段、`minisql.exec.Cli` 的演示四（真实执行/持久化）与 `docs/demo.sql` 一起看。
 
 ---
 
 ## 一、整体 / 架构
 
-### Q1. 一条 SQL 从文本到执行计划是怎么走的？【共同】
+### Q1. 一条 SQL 从文本到结果是怎么走的？【共同】
 
 ```
 SQL 文本 → Lexer(A) 词法 → Token 流 → Parser(B) 语法(递归下降) → AST
         → Semantic(C) 语义(名字绑定/类型检查) → 已检查 IR
         → Plan(C) 逻辑计划生成 → Optimizer(C) 5 条规则 → 优化后逻辑计划
+        → Executor(C) 执行 → 执行结果 → TableHeap(C) → BufferPool(C) LRU → DiskManager(C) → *.db
 ```
 
 演示口径：输入 `SELECT id,name FROM student WHERE 1=1 AND age>10+8;`，
-先打印 Token 流与 AST（A/B 产物），再由 C 给出「优化前计划 → 每步改写 → 优化后计划」。
+先打印 Token 流与 AST（A/B 产物），再由 C 给出「优化前计划 → 每步改写 → 优化后计划」；
+同样一条语句交给 `minisql.exec.Cli` 时，Executor 真正扫描/过滤/投影返回结果集并落盘。
 
 ### Q2. 三个模块怎么保证接口不打架、能顺利合代码？【共同】
 
@@ -138,9 +140,11 @@ Project [id]
 
 ### Q15. 怎么证明没把 A/B 代码改坏、C 是可用的？【C】
 
-`mvn test` 全量绿：A 的 LexerTest、B 的 ParserTest 原样通过，
-C 新增 catalog / semantic / plan / optimizer / MiniSqlCompilerTest。
-语义测试既有正例也有大量“必须抛 `[语义错误]`”的反例；优化测试断言“优化前 ≠ 优化后”和具体谓词文本。
+`mvn test` 全量绿（114 项）：A 的 LexerTest、B 的 ParserTest 原样通过，
+C 新增 catalog / semantic / plan / optimizer / MiniSqlCompilerTest，
+再叠加 storage（SlottedPage / DiskManager / BufferPool / FreeList）与 exec（RowCodec / ExprEvaluator / Executor / Persistence / Database）。
+语义测试既有正例也有大量“必须抛 `[语义错误]`”的反例；优化测试断言“优化前 ≠ 优化后”和具体谓词文本；
+持久化测试断言“写入 → 关闭 → 重开 → 数据仍在”。
 
 ### Q16. 如果时间不够，怎么取舍？【共同】
 
@@ -152,3 +156,40 @@ R4/R5 关系算子级规则次之；若仍不够，规则留接口空实现并�
 
 准备 ≥3 套 SQL（合法 / 优化 / 错误，见 `docs/demo.sql`）；
 本地 `mvn test` 全绿作为兜底；提前录一份 `minisql.Demo` 视频。
+
+---
+
+## 六、存储引擎与执行引擎（新增，对应评分「存储系统」「数据库系统」）
+
+### Q18. 页是怎么组织的？槽页（Slotted Page）格式是什么？【C】
+
+页大小固定 4096 字节，大端字节序。数据页/目录页都是「槽页」：
+页头 12 字节 = `pageType(1) + reserved(1) + slotCount(2) + freeSpaceOffset(2) + freeSpaceEnd(2) + nextPageId(4)`；
+槽目录从 12 向上增长（每条 6 字节 = 记录偏移 + 记录长度），记录从页尾向下增长。
+删除只把槽的 recordOffset 写成 -1（墓碑），不压缩——压缩会破坏扫描中已取得的其它 Rid；
+放不下的行分配新页并用 nextPageId 串成页链。文件第 0 页是文件头（magic "MSDB" + pageSize + catalogRoot + freeListHead）。
+
+### Q19. LRU 缓冲池是怎么实现命中/淘汰/回写的？【C】
+
+用 `LinkedHashMap(accessOrder=true)` 维护「最近访问在尾、最久未访问在头」。
+`getPage(id)` 命中则 pinCount++ 并自动移到 MRU；未命中且满则从头找第一个 pinCount==0 的帧淘汰，
+脏帧先写回磁盘。`unpin(id, dirty)` 减 pin；被 pin 的页不参与淘汰；`flushAll/close` 回写全部脏页。
+测试用固定访问序列 `0,1,2,0,3`（容量 3）断言「淘汰的是 1」来证明 LRU 正确。
+
+### Q20. 一条记录（行）怎么序列化？为什么能只解码需要的列？【B】
+
+schema 已知，所以编码不带类型标签、无 NULL 位图：INT=8 字节 long，VARCHAR=2 字节长度 + UTF-8。
+`RowCodec.decodeSubset(fullSchema, requested, bytes)` 按表定义顺序读完整条记录，但只把 requested 中出现的列留下——
+这正是 R5 投影裁剪在存储层的落地：堆里仍存整行，扫描时只解需要的列。
+
+### Q21. 系统目录怎么持久化、重开怎么恢复？【B】
+
+建表时（`Database.compile`）分配该表第一张数据页，把「表名 + 列定义 + 数据根页号」经 `SchemaCodec` 编成目录记录，
+由 `CatalogStore` 写进目录页链（满则链新目录页）。打开数据库时 `CatalogStore.loadAll()` 重载全部目录记录，
+逐个 `register` 进编译器的内存 Catalog——之后 SELECT/INSERT/DELETE 才能编译通过，这就是恢复路径。
+
+### Q22. 执行器是怎么跑一个计划的？除零怎么办？【C】
+
+`Executor` 按计划树逐算子执行（Volcano 风格）：Scan=堆扫描+过滤、Filter=过滤、Project=按列重排、
+Insert=按表定义序落行、Delete=先扫描取 Rid 再打墓碑。表达式交给 `ExprEvaluator` 按行求值：
+INT 用 Java long（整数除法、溢出回绕），VARCHAR 只允许 = / <>，AND/OR 短路；除零抛 `ExecutionException`（最易测试）。
